@@ -20,11 +20,6 @@ from langchain_core.output_parsers import StrOutputParser
 
 import os
 
-# APIs
-os.environ["OPENAI_API_KEY"] = "sk-05hY9VmXtb8jonQshatE0Q"
-os.environ["Pinecone_API_KEY"] = "pcsk_4kvKQd_36TWp5QQpxjoF7SasYzsE5ja3gKBG5pjRcsAihBz3g9RFuzNJgtbxrkDGaNaLvV"
-os.environ["LLMOD_BASE_URL"] = "https://api.llmod.ai/v1"
-
 # models
 os.environ["EMBEDDING_MODEL"] = "RPRTHPB-text-embedding-3-small"
 os.environ["GENERATION_MODEL"] = "RPRTHPB-gpt-5-mini"
@@ -85,119 +80,89 @@ def _json_response(status: int, payload: dict):
         "headers": {
             "Content-Type": "application/json",
             "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Methods": "POST, OPTIONS",
-            "Access-Control-Allow-Headers": "Content-Type, Authorization",
         },
         "body": json.dumps(payload, ensure_ascii=False),
     }
 
-def _parse_body(event) -> dict:
-    body = event.get("body")
-    if not body:
-        return {}
-    if isinstance(body, dict):
-        return body
+def _parse_body(event):
     try:
-        return json.loads(body)
+        return json.loads(event.get("body") or "{}")
     except Exception:
         return {}
 
 def _build_user_prompt(question: str, contexts: list[dict]) -> str:
-    # Simple RAG prompt formatting (you can change this freely)
-    ctx_lines = []
-    for i, c in enumerate(contexts, start=1):
-        ctx_lines.append(
-            f"[{i}] talk_id={c.get('talk_id')} | title={c.get('title')} | score={c.get('score')}\n"
-            f"{c.get('chunk', '')}\n"
+    ctx = []
+    for i, c in enumerate(contexts, 1):
+        ctx.append(
+            f"[{i}] {c['title']} (score={c['score']:.4f})\n{c['chunk']}\n"
         )
-    context_block = "\n".join(ctx_lines).strip()
-
-    return (
-        f"Question:\n{question}\n\n"
-        f"Retrieved context:\n{context_block}\n\n"
-        f"Answer using the context above. If the context is insufficient, say so."
-    )
+    return f"Question:\n{question}\n\nContext:\n{''.join(ctx)}"
 
 # -------------------------
-# Main Vercel handler
+# Main handler
 # -------------------------
 
 def handler(event, context):
-    # CORS preflight
-    if event.get("httpMethod") == "OPTIONS":
-        return _json_response(200, {"ok": True})
-
     if event.get("httpMethod") != "POST":
-        return _json_response(405, {"error": "Method not allowed. Use POST."})
+        return _json_response(405, {"error": "POST only"})
 
     body = _parse_body(event)
-    question = (body.get("question") or "").strip()
+    question = body.get("question", "").strip()
     if not question:
-        return _json_response(400, {"error": "Missing 'question' in JSON body."})
+        return _json_response(400, {"error": "Missing question"})
 
-    # ---- Config from env ----
-    PINECONE_API_KEY = os.environ["PINECONE_API_KEY"]
-    PINECONE_INDEX = os.environ["VECTOR_DB_INDEX_NAME"]
+    # ---- ENV ----
     OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
-    EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "RPRTHPB-text-embedding-3-small")
-    CHAT_MODEL = os.environ.get("GENERATION_MODEL", "RPRTHPB-gpt-5-mini")
+    PINECONE_API_KEY = os.environ["PINECONE_API_KEY"]
+    INDEX_NAME = os.environ["VECTOR_DB_INDEX_NAME"]
     TOP_K = int(os.environ.get("TOP_K", "10"))
-    SYSTEM_PROMPT = os.environ.get("SYSTEM_PROMPT", "")
 
     # ---- Clients ----
-    emb_model = OpenAIEmbeddings(
-        model=EMBEDDING_MODEL,
+    emb = OpenAIEmbeddings(
+        model=os.environ["EMBEDDING_MODEL"],
         api_key=OPENAI_API_KEY,
     )
 
     pc = Pinecone(api_key=PINECONE_API_KEY)
-    index = pc.Index(PINECONE_INDEX)
+    index = pc.Index(INDEX_NAME)
 
     # ---- Embed query ----
-    query_vec = emb_model.embed_query(question)
+    qvec = emb.embed_query(question)
 
-    # ---- Retrieve from Pinecone ----
+    # ---- Retrieve ----
     res = index.query(
-        vector=query_vec,
+        vector=qvec,
         top_k=TOP_K,
         include_metadata=True,
     )
 
-    matches = res.get("matches", []) or []
-    context_chunks = []
-    for m in matches:
-        md = (m.get("metadata") or {})
-        chunk_text = md.get("chunk_text") or md.get("chunk") or ""
-        context_chunks.append({
-            "talk_id": md.get("talk_id") or md.get("row_id") or m.get("id"),
+    contexts = []
+    for m in res["matches"]:
+        md = m["metadata"]
+        contexts.append({
+            "talk_id": md.get("talk_id"),
             "title": md.get("title"),
-            "chunk": chunk_text,
-            "score": float(m.get("score") or 0.0),
+            "chunk": md.get("chunk_text", ""),
+            "score": m["score"],
         })
 
-    # ---- Build augmented prompt ----
-    user_prompt = _build_user_prompt(question, context_chunks)
+    # ---- Prompt ----
+    user_prompt = _build_user_prompt(question, contexts)
 
-    # ---- Call GPT-5-mini ----
     client = OpenAI(api_key=OPENAI_API_KEY)
-
-    messages = []
-    if SYSTEM_PROMPT:
-        messages.append({"role": "system", "content": SYSTEM_PROMPT})
-    messages.append({"role": "user", "content": user_prompt})
-
-    chat = client.chat.completions.create(
-        model=CHAT_MODEL,
-        messages=messages,
+    completion = client.chat.completions.create(
+        model=os.environ["GENERATION_MODEL"],
+        messages=[
+            {"role": "system", "content": os.environ["SYSTEM_PROMPT"]},
+            {"role": "user", "content": user_prompt},
+        ],
     )
 
-    answer = chat.choices[0].message.content or ""
-
     return _json_response(200, {
-        "response": answer,
-        "context": context_chunks,
+        "response": completion.choices[0].message.content,
+        "context": contexts,
         "Augmented_prompt": {
-            "System": SYSTEM_PROMPT,
+            "System": os.environ["SYSTEM_PROMPT"],
             "User": user_prompt,
         }
     })
