@@ -31,7 +31,7 @@ os.environ["GENERATION_MODEL"] = "RPRTHPB-gpt-5-mini"
 
 # embedding parameters
 os.environ["TEXT_EMBEDDING_DIM"] = "1536"
-os.environ["VECTOR_DB_INDEX_NAME"] = "ted-talks-subset-embeddings"
+os.environ["VECTOR_DB_INDEX_NAME"] = "ted-talks-embeddings"
 os.environ["VECTOR_DB_SIMILARITY_METRIC"] = "cosine"
 os.environ["VECTOR_DB_CLOUD"] = "aws"
 os.environ["VECTOR_DB_REGION"] = "us-east-1"
