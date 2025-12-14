@@ -37,27 +37,22 @@ def _build_user_prompt(question: str, contexts: List[Dict[str, Any]]) -> str:
 @router.post("/prompt")
 def prompt_endpoint(payload: PromptIn):
     question = (payload.question or "").strip()
-    print(question)
     if not question:
         raise HTTPException(status_code=400, detail="question is required")
 
     # ---- Env (set these in Vercel dashboard) ----
     OPENAI_API_KEY = _require_env("OPENAI_API_KEY")
-    LLMOD_BASE_URL = os.getenv("LLMOD_BASE_URL")
+    LLMOD_BASE_URL = _require_env("LLMOD_BASE_URL")
 
     PINECONE_API_KEY = _require_env("PINECONE_API_KEY")
     INDEX_NAME = _require_env("VECTOR_DB_INDEX_NAME")
 
-    EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "RPRTHPB-text-embedding-3-small")
-    GENERATION_MODEL = os.getenv("GENERATION_MODEL", "RPRTHPB-gpt-5-mini")
+    EMBEDDING_MODEL = _require_env("EMBEDDING_MODEL")
+    GENERATION_MODEL = _require_env("GENERATION_MODEL")
 
-    TOP_K = int(os.getenv("TOP_K", "10"))
-    SYSTEM_PROMPT = os.getenv("SYSTEM_PROMPT", "")
-    
-    print(EMBEDDING_MODEL)
-    print(OPENAI_API_KEY)
-    print(LLMOD_BASE_URL)
-    print(INDEX_NAME)
+    TOP_K = int(_require_env("TOP_K"))
+    SYSTEM_PROMPT = _require_env("SYSTEM_PROMPT")
+
     # ---- Clients ----
     emb = OpenAIEmbeddings(
         model=EMBEDDING_MODEL,
