@@ -37,12 +37,13 @@ def _build_user_prompt(question: str, contexts: List[Dict[str, Any]]) -> str:
 @router.post("/prompt")
 def prompt_endpoint(payload: PromptIn):
     question = (payload.question or "").strip()
+    print(question)
     if not question:
         raise HTTPException(status_code=400, detail="question is required")
 
     # ---- Env (set these in Vercel dashboard) ----
-    OPENAI_API_KEY = _require_env("OPENAI_API_KEY")          # your llmod.ai key goes here
-    LLMOD_BASE_URL = os.getenv("LLMOD_BASE_URL", "https://api.llmod.ai/v1")
+    OPENAI_API_KEY = _require_env("OPENAI_API_KEY")
+    LLMOD_BASE_URL = os.getenv("LLMOD_BASE_URL")
 
     PINECONE_API_KEY = _require_env("PINECONE_API_KEY")
     INDEX_NAME = _require_env("VECTOR_DB_INDEX_NAME")
@@ -52,7 +53,11 @@ def prompt_endpoint(payload: PromptIn):
 
     TOP_K = int(os.getenv("TOP_K", "10"))
     SYSTEM_PROMPT = os.getenv("SYSTEM_PROMPT", "")
-
+    
+    print(EMBEDDING_MODEL)
+    print(OPENAI_API_KEY)
+    print(LLMOD_BASE_URL)
+    print(INDEX_NAME)
     # ---- Clients ----
     emb = OpenAIEmbeddings(
         model=EMBEDDING_MODEL,
@@ -77,9 +82,9 @@ def prompt_endpoint(payload: PromptIn):
     for m in matches:
         md = (m.get("metadata") or {})
         context_chunks.append({
-            "talk_id": md.get("talk_id") or md.get("row_id") or m.get("id"),
-            "title": md.get("title", ""),
-            "chunk": md.get("chunk_text", "") or md.get("chunk", "") or "",
+            "talk_id": md.get("talk_id") or "",
+            "title": md.get("title", "") or "",
+            "chunk": md.get("chunk_text", "") or "",
             "score": float(m.get("score") or 0.0),
         })
 
@@ -90,8 +95,7 @@ def prompt_endpoint(payload: PromptIn):
     llm = ChatOpenAI(
         model=GENERATION_MODEL,
         api_key=OPENAI_API_KEY,
-        base_url=LLMOD_BASE_URL,
-        temperature=0,
+        base_url=LLMOD_BASE_URL
     )
 
     messages = []
