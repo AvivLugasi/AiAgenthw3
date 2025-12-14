@@ -1,168 +1,111 @@
 # api/prompt.py
-import json
-
-from typing import Any, Dict, List, Optional
-
-from fastapi import FastAPI
-from pydantic import BaseModel, Field
-
-from openai import OpenAI
-from pinecone import Pinecone
-
-from langchain_openai import OpenAIEmbeddings
-from pinecone import Pinecone, ServerlessSpec
-
-from typing import List, Dict, Any
-
-from langchain_openai import ChatOpenAI
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.output_parsers import StrOutputParser
-
 import os
+from typing import Any, Dict, List
 
-# models
-os.environ["EMBEDDING_MODEL"] = "RPRTHPB-text-embedding-3-small"
-os.environ["GENERATION_MODEL"] = "RPRTHPB-gpt-5-mini"
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
 
-# embedding parameters
-os.environ["TEXT_EMBEDDING_DIM"] = "1536"
-os.environ["VECTOR_DB_INDEX_NAME"] = "ted-talks-embeddings"
-os.environ["VECTOR_DB_SIMILARITY_METRIC"] = "cosine"
-os.environ["VECTOR_DB_CLOUD"] = "aws"
-os.environ["VECTOR_DB_REGION"] = "us-east-1"
-os.environ["EMBEDDING_BATCH_SIZE"] = "100"
+from pinecone import Pinecone
+from langchain_openai import OpenAIEmbeddings, ChatOpenAI
 
-# RAG parameters
-os.environ["OVERLAP_RATIO"] = "0.1" # range: 0-0.3
-os.environ["TOP_K"]  = "10" # range: 1-30
-os.environ["CHUNK_SIZE"] = "2048" # limit 2048
+router = APIRouter()
 
-# DataSet parameters
-META_COLS = [
-    "talk_id",
-    "title",
-    "speaker_1",
-    "all_speakers",
-    "occupations",
-    "about_speakers",
-    "views",
-    "recorded_date",
-    "published_date",
-    "event",
-    "native_lang",
-    "available_lang",
-    "comments",
-    "duration",
-    "topics",
-    "related_talks",
-    "url",
-    "description",
-]
+# ---------- Request/Response schemas ----------
+class PromptIn(BaseModel):
+    question: str
 
-# Generation model parameters
-os.environ["SYSTEM_PROMPT"] = "You are a TED Talk assistant that answers questions strictly and \
-                               only based on the TED dataset context provided to you metadata \
-                               and transcript passages. You must not use any external \
-                               knowledge, the open internet, or information that is not explicitly \
-                               contained in the retrieved context. If the answer cannot be \
-                               determined from the provided context, respond: “I don’t know \
-                               based on the provided TED data.” Always explain your answer \
-                               using the given context, quoting or paraphrasing the relevant \
-                               transcript or metadata when helpful."
+# ---------- Helpers ----------
+def _require_env(name: str) -> str:
+    v = os.getenv(name)
+    if not v:
+        raise RuntimeError(f"Missing required env var: {name}")
+    return v
 
-# -------------------------
-# Helpers
-# -------------------------
-
-def _json_response(status: int, payload: dict):
-    return {
-        "statusCode": status,
-        "headers": {
-            "Content-Type": "application/json",
-            "Access-Control-Allow-Origin": "*",
-        },
-        "body": json.dumps(payload, ensure_ascii=False),
-    }
-
-def _parse_body(event):
-    try:
-        return json.loads(event.get("body") or "{}")
-    except Exception:
-        return {}
-
-def _build_user_prompt(question: str, contexts: list[dict]) -> str:
-    ctx = []
+def _build_user_prompt(question: str, contexts: List[Dict[str, Any]]) -> str:
+    lines = []
     for i, c in enumerate(contexts, 1):
-        ctx.append(
-            f"[{i}] {c['title']} (score={c['score']:.4f})\n{c['chunk']}\n"
+        lines.append(
+            f"[{i}] talk_id={c.get('talk_id','')} | title={c.get('title','')} | score={c.get('score',0.0):.4f}\n"
+            f"{c.get('chunk','')}\n"
         )
-    return f"Question:\n{question}\n\nContext:\n{''.join(ctx)}"
+    return (
+        f"Question:\n{question}\n\n"
+        f"Retrieved context:\n{''.join(lines)}\n\n"
+        f"Answer ONLY using the retrieved context."
+    )
 
-# -------------------------
-# Main handler
-# -------------------------
-
-def handler(event, context):
-    if event.get("httpMethod") != "POST":
-        return _json_response(405, {"error": "POST only"})
-
-    body = _parse_body(event)
-    question = body.get("question", "").strip()
+@router.post("/prompt")
+def prompt_endpoint(payload: PromptIn):
+    question = (payload.question or "").strip()
     if not question:
-        return _json_response(400, {"error": "Missing question"})
+        raise HTTPException(status_code=400, detail="question is required")
 
-    # ---- ENV ----
-    OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
-    PINECONE_API_KEY = os.environ["PINECONE_API_KEY"]
-    INDEX_NAME = os.environ["VECTOR_DB_INDEX_NAME"]
-    TOP_K = int(os.environ.get("TOP_K", "10"))
+    # ---- Env (set these in Vercel dashboard) ----
+    OPENAI_API_KEY = _require_env("OPENAI_API_KEY")          # your llmod.ai key goes here
+    LLMOD_BASE_URL = os.getenv("LLMOD_BASE_URL", "https://api.llmod.ai/v1")
+
+    PINECONE_API_KEY = _require_env("PINECONE_API_KEY")
+    INDEX_NAME = _require_env("VECTOR_DB_INDEX_NAME")
+
+    EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "RPRTHPB-text-embedding-3-small")
+    GENERATION_MODEL = os.getenv("GENERATION_MODEL", "RPRTHPB-gpt-5-mini")
+
+    TOP_K = int(os.getenv("TOP_K", "10"))
+    SYSTEM_PROMPT = os.getenv("SYSTEM_PROMPT", "")
 
     # ---- Clients ----
     emb = OpenAIEmbeddings(
-        model=os.environ["EMBEDDING_MODEL"],
+        model=EMBEDDING_MODEL,
         api_key=OPENAI_API_KEY,
+        base_url=LLMOD_BASE_URL,   # key point for llmod.ai
     )
 
     pc = Pinecone(api_key=PINECONE_API_KEY)
     index = pc.Index(INDEX_NAME)
 
-    # ---- Embed query ----
+    # ---- Embed query + retrieve ----
     qvec = emb.embed_query(question)
 
-    # ---- Retrieve ----
     res = index.query(
         vector=qvec,
         top_k=TOP_K,
         include_metadata=True,
     )
 
-    contexts = []
-    for m in res["matches"]:
-        md = m["metadata"]
-        contexts.append({
-            "talk_id": md.get("talk_id"),
-            "title": md.get("title"),
-            "chunk": md.get("chunk_text", ""),
-            "score": m["score"],
+    matches = (res.get("matches") or [])
+    context_chunks: List[Dict[str, Any]] = []
+    for m in matches:
+        md = (m.get("metadata") or {})
+        context_chunks.append({
+            "talk_id": md.get("talk_id") or md.get("row_id") or m.get("id"),
+            "title": md.get("title", ""),
+            "chunk": md.get("chunk_text", "") or md.get("chunk", "") or "",
+            "score": float(m.get("score") or 0.0),
         })
 
-    # ---- Prompt ----
-    user_prompt = _build_user_prompt(question, contexts)
+    # ---- Augmented prompt ----
+    user_prompt = _build_user_prompt(question, context_chunks)
 
-    client = OpenAI(api_key=OPENAI_API_KEY)
-    completion = client.chat.completions.create(
-        model=os.environ["GENERATION_MODEL"],
-        messages=[
-            {"role": "system", "content": os.environ["SYSTEM_PROMPT"]},
-            {"role": "user", "content": user_prompt},
-        ],
+    # ---- Generate answer (LangChain interface) ----
+    llm = ChatOpenAI(
+        model=GENERATION_MODEL,
+        api_key=OPENAI_API_KEY,
+        base_url=LLMOD_BASE_URL,
+        temperature=0,
     )
 
-    return _json_response(200, {
-        "response": completion.choices[0].message.content,
-        "context": contexts,
+    messages = []
+    if SYSTEM_PROMPT:
+        messages.append(("system", SYSTEM_PROMPT))
+    messages.append(("user", user_prompt))
+
+    answer = llm.invoke(messages).content
+
+    return {
+        "response": answer,
+        "context": context_chunks,
         "Augmented_prompt": {
-            "System": os.environ["SYSTEM_PROMPT"],
+            "System": SYSTEM_PROMPT,
             "User": user_prompt,
-        }
-    })
+        },
+    }

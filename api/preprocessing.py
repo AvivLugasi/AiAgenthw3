@@ -13,10 +13,6 @@ from langchain_core.output_parsers import StrOutputParser
 
 import os
 
-
-os.environ["OPENAI_API_KEY"] = "sk-05hY9VmXtb8jonQshatE0Q"
-os.environ["Pinecone_API_KEY"] = "pcsk_4kvKQd_36TWp5QQpxjoF7SasYzsE5ja3gKBG5pjRcsAihBz3g9RFuzNJgtbxrkDGaNaLvV"
-
 # models
 EMBEDDING_MODEL = "RPRTHPB-text-embedding-3-small"
 GENERATION_MODEL = "RPRTHPB-gpt-5-mini"
@@ -70,7 +66,7 @@ SYSTEM_PROMPT = "You are a TED Talk assistant that answers questions strictly an
 file_path = "ted_talks_en.csv"
 ted_talks = pd.read_csv(file_path)
 
-pc = Pinecone(api_key=os.environ["Pinecone_API_KEY"])
+pc = Pinecone(api_key=os.environ["PINECONE_API_KEY"])
 
 # create index if it doesn't exist yet
 if VECTOR_DB_INDEX_NAME not in [idx.name for idx in pc.list_indexes()]:
@@ -170,6 +166,6 @@ chunks_df = make_chunks_df(ted_talks)
 
 emb_model = OpenAIEmbeddings(model=EMBEDDING_MODEL,
                              api_key=os.environ["OPENAI_API_KEY"],
-                             base_url="https://api.llmod.ai/v1")
+                             base_url=os.environ["LLMOD_BASE_URL"])
 
 df_to_pinecone(chunks_df, index, emb_model, batch_size=EMBEDDING_BATCH_SIZE)
