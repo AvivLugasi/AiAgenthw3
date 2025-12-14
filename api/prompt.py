@@ -26,7 +26,7 @@ def _build_user_prompt(question: str, contexts: List[Dict[str, Any]]) -> str:
     for i, c in enumerate(contexts, 1):
         lines.append(
             f"[{i}] talk_id={c.get('talk_id','')} | title={c.get('title','')} | score={c.get('score',0.0):.4f}\n"
-            f"{c.get('chunk_text','')}\n"
+            f"{c.get('chunk','')}\n"
         )
     return (
         f"Question:\n{question}\n\n"
