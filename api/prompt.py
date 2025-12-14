@@ -105,6 +105,6 @@ def prompt_endpoint(payload: PromptIn):
         "context": context_chunks,
         "Augmented_prompt": {
             "System": SYSTEM_PROMPT,
-            "User": user_prompt,
+            "User": question,
         },
     }
