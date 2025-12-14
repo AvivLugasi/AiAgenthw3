@@ -4,5 +4,5 @@ openai>=1.12.0
 langchain>=0.2.0
 langchain-openai>=0.1.7
 langchain-core>=0.2.0
-pinecone-client>=3.0.0
+pinecone>=3.0.0
 uvicorn>=0.27.0
